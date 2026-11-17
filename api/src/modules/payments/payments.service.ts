@@ -1093,7 +1093,9 @@ export class PaymentsService {
     );
     const verification = await this.paymentProvider.verifyTransaction(ref);
 
-    if (verification.status === 'SUCCESS') {
+    const vStatus = String(verification.status || '').toUpperCase();
+
+    if (vStatus === 'SUCCESS') {
       const expectedAmount = Number(booking.payment.amount);
       if (
         verification.amount !== undefined &&
@@ -1111,8 +1113,8 @@ export class PaymentsService {
       );
       await this.processBookingPaymentResult(booking.payment.id, true, ref);
     } else if (
-      verification.status === 'FAILED' ||
-      verification.status === 'EXPIRED'
+      vStatus === 'FAILED' ||
+      vStatus === 'EXPIRED'
     ) {
       this.logger.warn(
         `[VerifyPayment] Paiement rejeté (${verification.status}) par provider pour booking=${bookingId}`,
