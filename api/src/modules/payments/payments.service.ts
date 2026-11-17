@@ -293,6 +293,13 @@ export class PaymentsService {
     }
     this.logger.log(`[Webhook] Signature verified for order_id=${payload.order_id}`);
 
+    const rawData = (payload as any).data || {};
+    const rawJson = (payload as any).json ? (typeof (payload as any).json === 'string' ? JSON.parse((payload as any).json) : (payload as any).json) : null;
+    const rawAmountVal = payload.amount ?? rawJson?.amount ?? rawData.amount;
+    const webhookAmount = rawAmountVal !== undefined ? Number(rawAmountVal) : undefined;
+    const rawCurrencyVal = payload.currency ?? rawJson?.currency ?? rawData.currency;
+    const webhookCurrency = typeof rawCurrencyVal === 'string' ? rawCurrencyVal.trim().toUpperCase() : '';
+
     // --- HANDLING STORE ORDERS ---
     if (payload.order_id && payload.order_id.startsWith('EA-')) {
        const orders = await this.dataSource.manager.find(Order, {
@@ -307,6 +314,16 @@ export class PaymentsService {
        if (!allPending) {
           this.logger.warn(`[Webhook] Order ${payload.order_id} not in PENDING_PAYMENT — ignoring`);
           return { received: true, message: 'Already processed' };
+       }
+
+       const expectedTotal = orders.reduce((sum, o) => sum + Number(o.total_amount), 0);
+       if (webhookAmount !== undefined && !isNaN(webhookAmount) && webhookAmount !== expectedTotal) {
+         this.logger.error(`[Webhook] REJECTED — Montant invalide pour commande ${payload.order_id}: attendu=${expectedTotal}, reçu=${webhookAmount}`);
+         throw new BadRequestException('Payment amount mismatch');
+       }
+       if (webhookCurrency && webhookCurrency !== 'XOF' && webhookCurrency !== 'FCFA' && webhookCurrency !== 'CFA') {
+         this.logger.error(`[Webhook] REJECTED — Devise invalide pour commande ${payload.order_id}: attendu=XOF/FCFA, reçu=${webhookCurrency}`);
+         throw new BadRequestException('Payment currency mismatch');
        }
        if (payload.status === 'success') {
           for (const order of orders) {
