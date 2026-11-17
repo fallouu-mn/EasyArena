@@ -121,6 +121,11 @@ export class PaymentsService {
       process.env.CLIENT_APP_URL ||
       'https://easyarena221.com';
     const returnUrl = `${frontendUrl}/booking/confirmation?bookingId=${bookingId}`;
+    const apiPublicUrl =
+      this.configService.get<string>('apiPublicUrl') ||
+      process.env.API_PUBLIC_URL ||
+      'https://api.easyarena221.com';
+    const webhookUrl = `${apiPublicUrl.replace(/\/+$/, '')}/api/v1/payments/webhook`;
 
     // Check for existing pending payment — re-call provider to get fresh URLs/QR
     const existingPayment = await this.paymentRepo.findOne({ where: { booking_id: bookingId } });
@@ -133,7 +138,7 @@ export class PaymentsService {
           reference: existingPayment.id,
           phone: dto.phone,
           returnUrl,
-          callbackUrl: returnUrl,
+          callbackUrl: webhookUrl,
         });
       } catch (err) {
         await this.bookingRepo.update(booking.id, { status: BookingStatus.EXPIRED });
@@ -174,7 +179,7 @@ export class PaymentsService {
         reference: payment.id,
         phone: dto.phone,
         returnUrl,
-        callbackUrl: returnUrl,
+        callbackUrl: webhookUrl,
       });
     } catch (err) {
       await this.bookingRepo.update(booking.id, { status: BookingStatus.EXPIRED });
@@ -284,14 +289,23 @@ export class PaymentsService {
   }
 
   async handleWebhook(rawBody: string, signature: string, payload: WebhookPayloadDto) {
+    // SamirPay peut envoyer order_id/transaction_id (snake_case) ou
+    // orderId/transactionId (camelCase). On normalise avant tout usage.
+    const orderId = payload.order_id ?? (payload as any).orderId;
+    const transactionId = payload.transaction_id ?? (payload as any).transactionId;
+
     // ══════════════════════════════════════════════════════════════════
     // SECURITY GATE: HMAC Signature Verification
     // ══════════════════════════════════════════════════════════════════
     if (!this.paymentProvider.verifyWebhook(rawBody, signature)) {
-      this.logger.error(`[Webhook] REJECTED — invalid HMAC signature for order_id=${payload.order_id}`);
+      this.logger.error(`[Webhook] REJECTED — invalid HMAC signature for order_id=${orderId}`);
       throw new ForbiddenException('Invalid webhook signature');
     }
-    this.logger.log(`[Webhook] Signature verified for order_id=${payload.order_id}`);
+    this.logger.log(`[Webhook] Signature verified for order_id=${orderId}`);
+
+    if (!orderId) {
+      throw new BadRequestException('Missing order reference');
+    }
 
     const rawData = (payload as any).data || {};
     const rawJson = (payload as any).json ? (typeof (payload as any).json === 'string' ? JSON.parse((payload as any).json) : (payload as any).json) : null;
@@ -301,29 +315,29 @@ export class PaymentsService {
     const webhookCurrency = typeof rawCurrencyVal === 'string' ? rawCurrencyVal.trim().toUpperCase() : '';
 
     // --- HANDLING STORE ORDERS ---
-    if (payload.order_id && payload.order_id.startsWith('EA-')) {
+    if (orderId && orderId.startsWith('EA-')) {
        const orders = await this.dataSource.manager.find(Order, {
-         where: { reference: payload.order_id }
+         where: { reference: orderId }
        });
        if (!orders || orders.length === 0) {
-          this.logger.warn(`Webhook: orders for reference ${payload.order_id} not found`);
+          this.logger.warn(`Webhook: orders for reference ${orderId} not found`);
           return { received: true };
        }
        // Integrity check: all orders must be in PENDING_PAYMENT
        const allPending = orders.every(o => o.status === OrderStatus.PENDING_PAYMENT);
        if (!allPending) {
-          this.logger.warn(`[Webhook] Order ${payload.order_id} not in PENDING_PAYMENT — ignoring`);
+          this.logger.warn(`[Webhook] Order ${orderId} not in PENDING_PAYMENT — ignoring`);
           return { received: true, message: 'Already processed' };
        }
        if (payload.status === 'success') {
           for (const order of orders) {
              await this.dataSource.manager.update(Order, order.id, { status: OrderStatus.PAID });
           }
-          this.paymentGateway.notifyPaymentConfirmed(payload.order_id);
+          this.paymentGateway.notifyPaymentConfirmed(orderId);
 
           const phone = orders[0]?.payment_phone;
           if (phone) {
-             const ref = payload.order_id;
+             const ref = orderId;
              const msg = `Félicitations ! Votre paiement pour la commande EasyArena #${ref} a bien été reçu. Le vendeur prépare actuellement votre livraison.`;
              await this.notificationsService.sendRawSms(phone, msg);
           }
@@ -342,15 +356,15 @@ export class PaymentsService {
                  .execute();
              }
           }
-          this.paymentGateway.notifyPaymentFailed(payload.order_id);
-          this.logger.log(`[Webhook] Orders ${payload.order_id} cancelled — stock restored`);
+          this.paymentGateway.notifyPaymentFailed(orderId);
+          this.logger.log(`[Webhook] Orders ${orderId} cancelled — stock restored`);
        }
        return { received: true };
     }
 
     // --- HANDLING SUBSCRIPTION INSTALLMENTS ---
     const installment = await this.dataSource.manager.findOne(PaymentInstallment, {
-      where: { id: payload.order_id }
+      where: { id: orderId }
     });
     if (installment) {
        // Integrity check: installment must be PENDING
@@ -450,21 +464,21 @@ export class PaymentsService {
     // order_id can be payment.id, payment.external_ref, or booking_id
     const payment = await this.paymentRepo.findOne({
       where: [
-        { id: payload.order_id },
-        { external_ref: payload.order_id },
-        { booking_id: payload.order_id },
+        { id: orderId },
+        { external_ref: orderId },
+        { booking_id: orderId },
       ],
     });
     
     // --- HANDLING TICKETS PAYMENT WEBHOOK ---
     if (!payment) {
       const ticket = await this.dataSource.manager.findOne(EventTicket, {
-        where: { id: payload.order_id },
+        where: { id: orderId },
         relations: ['client', 'client.user', 'event'],
       });
       
       if (!ticket) {
-        this.logger.warn(`Webhook: payment or ticket ${payload.order_id} not found`);
+        this.logger.warn(`Webhook: payment or ticket ${orderId} not found`);
         return { received: true };
       }
 
@@ -580,7 +594,7 @@ export class PaymentsService {
       throw new BadRequestException('Payment currency mismatch');
     }
 
-    await this.processBookingPaymentResult(payment.id, isSuccess, payload.transaction_id);
+    await this.processBookingPaymentResult(payment.id, isSuccess, transactionId);
     return { received: true };
   }
 

@@ -10,6 +10,7 @@ import { IPaymentProvider, PAYMENT_PROVIDER } from './interfaces/payment-provide
 import { IotService } from '../iot/iot.service';
 import { TransactionsService } from '../transactions/transactions.service';
 import { PaymentGateway } from './payment.gateway';
+import { PaymentsService } from './payments.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RecipientsResolver } from '../notifications/recipients.resolver';
 import { SponsorshipService } from '../sponsorship/sponsorship.service';
@@ -31,6 +32,7 @@ export class ReconciliationService {
     private readonly notificationsService: NotificationsService,
     private readonly recipientsResolver: RecipientsResolver,
     private readonly sponsorshipService: SponsorshipService,
+    private readonly paymentsService: PaymentsService,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -75,11 +77,22 @@ export class ReconciliationService {
         }
 
         if (verifyResult.status === 'SUCCESS') {
-          await this.confirmOrphanBooking(booking);
-          confirmedCount++;
+          const finalStatus = await this.confirmViaPaymentResult(booking);
+          if (finalStatus === BookingStatus.CONFIRMED) confirmedCount++;
+          else cancelledCount++;
         } else if (verifyResult.status === 'FAILED' || verifyResult.status === 'EXPIRED') {
           await this.cancelOrphanBooking(booking, verifyResult.status);
           cancelledCount++;
+        } else if (
+          booking.expires_at &&
+          new Date(booking.expires_at).getTime() <= Date.now()
+        ) {
+          // 24 h dépassées et SamirPay ne dit toujours pas SUCCESS : on ne
+          // touche à RIEN en base tant qu'un vrai SUCCESS n'a pas été lu
+          // correctement. Simple alerte pour vérification manuelle.
+          this.logger.warn(
+            `[Reconciliation] Réservation ${booking.id} : 24h dépassées, SamirPay toujours ${verifyResult.status} — à vérifier manuellement`,
+          );
         }
       } catch (err: any) {
         this.logger.error(`[Reconciliation] Erreur lors de la vérification de la réservation ${booking.id}: ${err.message}`);
@@ -88,6 +101,35 @@ export class ReconciliationService {
 
     this.logger.log(`[Reconciliation] Bilan : ${orphanBookings.length} traitées, ${confirmedCount} repêchées/confirmées, ${cancelledCount} annulées.`);
     return { processed: orphanBookings.length, confirmed: confirmedCount, cancelled: cancelledCount };
+  }
+
+  /**
+   * Confirme via le chemin atomique/idempotent partagé avec le webhook et
+   * verify-payment (crédit owner, SMS client/propriétaire, sponsoring, IoT,
+   * WebSocket). Remplace l'ancien confirmOrphanBooking qui dupliquait la
+   * logique et créditait le propriétaire sans déduire la commission.
+   */
+  private async confirmViaPaymentResult(booking: Booking): Promise<BookingStatus> {
+    if (!booking.payment) {
+      // Réservation sans ligne payment : on garde l'ancien chemin.
+      await this.confirmOrphanBooking(booking);
+      return BookingStatus.CONFIRMED;
+    }
+
+    const result = await this.paymentsService.processBookingPaymentResult(
+      booking.payment.id,
+      true,
+      booking.payment.external_ref,
+    );
+
+    if (!result) {
+      this.logger.warn(
+        `[Reconciliation] Paiement introuvable pour la réservation ${booking.id} — confirmation ignorée.`,
+      );
+      return BookingStatus.CANCELLED;
+    }
+
+    return result.status;
   }
 
   async confirmOrphanBooking(booking: Booking) {

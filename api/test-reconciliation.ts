@@ -115,6 +115,10 @@ async function runReconciliationCrashTest() {
     distributeCommissions: async () => {},
   };
 
+  const mockPaymentsService: any = {
+    processBookingPaymentResult: async () => ({ status: 'confirmed' }),
+  };
+
   // Instantiate ReconciliationService
   const reconciliationService = new ReconciliationService(
     mockBookingRepo,
@@ -127,6 +131,7 @@ async function runReconciliationCrashTest() {
     mockNotificationsService,
     null as any,
     mockSponsorshipService,
+    mockPaymentsService,
     mockDataSource,
   );
 

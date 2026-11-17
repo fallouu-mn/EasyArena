@@ -47,11 +47,16 @@ export class SamirpayProvider implements IPaymentProvider {
   private readonly apiKey: string;
   private readonly secretKey: string;
   private readonly webhookSecret: string;
+  private readonly apiPublicUrl: string;
 
   constructor(private readonly configService: ConfigService) {
     this.apiKey = this.configService.get<string>('payment.samirpay.apiKey')!;
     this.secretKey = this.configService.get<string>('payment.samirpay.secretKey')!;
     this.webhookSecret = this.configService.get<string>('payment.samirpay.webhookSecret') ?? this.secretKey;
+    this.apiPublicUrl =
+      this.configService.get<string>('apiPublicUrl') ||
+      process.env.API_PUBLIC_URL ||
+      'https://api.easyarena221.com';
   }
 
   private get headers(): Record<string, string> {
@@ -77,7 +82,10 @@ export class SamirpayProvider implements IPaymentProvider {
       process.env.CLIENT_APP_URL ||
       'https://easyarena221.com';
     const defaultReturnUrl = `${frontendUrl}/booking/confirmation`;
-    const returnUrl = params.returnUrl || params.callbackUrl || defaultReturnUrl;
+    const returnUrl = params.returnUrl || defaultReturnUrl;
+    const webhookUrl =
+      params.callbackUrl ||
+      `${this.apiPublicUrl.replace(/\/+$/, '')}/api/v1/payments/webhook`;
 
     let cleanPhone = params.phone ? params.phone.replace(/[\s\-().]/g, '') : '';
     if (cleanPhone.startsWith('+221')) cleanPhone = cleanPhone.slice(4);
@@ -95,13 +103,13 @@ export class SamirpayProvider implements IPaymentProvider {
       phoneNumber: cleanPhone,
       telephone: fullIntlPhone,
       customerPhone: fullIntlPhone,
-      callbackUrl: returnUrl,
+      callbackUrl: webhookUrl,
       returnUrl: returnUrl,
-      urlCallback: returnUrl,
+      urlCallback: webhookUrl,
       urlSuccess: returnUrl,
     };
 
-    this.logger.log(`[CashIn] orderId=${params.reference} operator=${operatorName} amount=${params.amount} phone=${fullIntlPhone} returnUrl=${returnUrl}`);
+    this.logger.log(`[CashIn] orderId=${params.reference} operator=${operatorName} amount=${params.amount} phone=${fullIntlPhone} callbackUrl=${webhookUrl} returnUrl=${returnUrl}`);
 
     const response = await fetch(CASHIN_URL, {
       method: 'POST',
@@ -230,7 +238,9 @@ export class SamirpayProvider implements IPaymentProvider {
       const amount = rawAmount !== undefined && !isNaN(Number(rawAmount)) ? Number(rawAmount) : undefined;
       const currency = typeof rawCurrency === 'string' ? rawCurrency.trim().toUpperCase() : undefined;
 
-      const statusStr = String(data.status || data.data?.status || '').toUpperCase();
+      const statusStr = String(
+        data.body?.status ?? data.data?.status ?? data.status ?? '',
+      ).toUpperCase();
       if (['SUCCESS', 'SUCCESSFUL', 'PAID', 'COMPLETED'].includes(statusStr)) {
         return { status: 'SUCCESS', amount, currency };
       }
