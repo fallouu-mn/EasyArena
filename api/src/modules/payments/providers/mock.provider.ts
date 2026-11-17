@@ -42,7 +42,11 @@ export class MockPaymentProvider implements IPaymentProvider {
     }
   }
 
-  async verifyTransaction(reference: string): Promise<{ status: 'SUCCESS' | 'FAILED' | 'PENDING' | 'EXPIRED' }> {
+  async verifyTransaction(reference: string): Promise<{
+    status: 'SUCCESS' | 'FAILED' | 'PENDING' | 'EXPIRED';
+    amount?: number;
+    currency?: string;
+  }> {
     this.logger.log(`[VERIFY STUB] Verifying: ${reference}`);
     return { status: 'SUCCESS' };
   }

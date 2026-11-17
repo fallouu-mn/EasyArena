@@ -774,25 +774,44 @@ export class PaymentsService {
     }
 
     const expectedAmount = Number(payment.amount);
+    let effectiveAmount = webhookAmount;
+    let effectiveCurrency = webhookCurrency;
+
+    // Si SamirPay n'envoie pas le montant dans le webhook, interroger l'API pour le récupérer
+    if (effectiveAmount === undefined) {
+      try {
+        const ref = payment.external_ref || payment.id;
+        const verification = await this.paymentProvider.verifyTransaction(ref);
+        if (verification.amount !== undefined) {
+          effectiveAmount = Number(verification.amount);
+        }
+        if (!effectiveCurrency && verification.currency) {
+          effectiveCurrency = verification.currency.trim().toUpperCase();
+        }
+      } catch (err: any) {
+        this.logger.warn(
+          `[Webhook] Impossible de récupérer le montant via verifyTransaction: ${err?.message}`,
+        );
+      }
+    }
+
     if (
-      webhookAmount !== undefined &&
-      !isNaN(webhookAmount) &&
-      webhookAmount !== expectedAmount
+      effectiveAmount !== undefined &&
+      !isNaN(effectiveAmount) &&
+      Number(effectiveAmount) !== expectedAmount
     ) {
       this.logger.error(
-        `[Webhook] REJECTED — Montant invalide pour booking payment ${payment.id}: attendu=${expectedAmount}, reçu=${webhookAmount}`,
+        `[Webhook] REJECTED — Montant invalide pour booking payment ${payment.id}: attendu=${expectedAmount}, reçu=${effectiveAmount}`,
       );
       throw new BadRequestException('Payment amount mismatch');
     }
 
-    if (
-      webhookCurrency &&
-      webhookCurrency !== 'XOF' &&
-      webhookCurrency !== 'FCFA' &&
-      webhookCurrency !== 'CFA'
-    ) {
+    const isAllowedCurrency = (c: string) =>
+      ['XOF', 'FCFA', 'CFA'].includes(c.trim().toUpperCase());
+
+    if (effectiveCurrency && !isAllowedCurrency(effectiveCurrency)) {
       this.logger.error(
-        `[Webhook] REJECTED — Devise invalide pour booking payment ${payment.id}: attendu=XOF/FCFA, reçu=${webhookCurrency}`,
+        `[Webhook] REJECTED — Devise invalide pour booking payment ${payment.id}: attendu=XOF/FCFA/CFA, reçu=${effectiveCurrency}`,
       );
       throw new BadRequestException('Payment currency mismatch');
     }
@@ -1075,6 +1094,18 @@ export class PaymentsService {
     const verification = await this.paymentProvider.verifyTransaction(ref);
 
     if (verification.status === 'SUCCESS') {
+      const expectedAmount = Number(booking.payment.amount);
+      if (
+        verification.amount !== undefined &&
+        !isNaN(Number(verification.amount)) &&
+        Number(verification.amount) !== expectedAmount
+      ) {
+        this.logger.error(
+          `[VerifyPayment] REJECTED — Montant invalide retourné par SamirPay pour booking ${bookingId}: attendu=${expectedAmount}, reçu=${verification.amount}`,
+        );
+        return booking;
+      }
+
       this.logger.log(
         `[VerifyPayment] Paiement confirmé par provider pour booking=${bookingId}`,
       );
