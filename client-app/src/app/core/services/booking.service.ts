@@ -1,6 +1,7 @@
 import { Injectable, signal, inject } from '@angular/core';
 import { Observable, tap, map } from 'rxjs';
 import { ApiService } from './api.service';
+import { WebSocketService } from './websocket.service';
 import { Booking, CreateBookingData, PaymentData, PaymentInitiateResponse, MobileOperator, calculateBookingPricing } from '../models/booking.model';
 
 const PAYMENT_METHOD_MAP: Record<string, string> = {
@@ -64,10 +65,25 @@ function mapPaymentStatus(s: string): any {
 @Injectable({ providedIn: 'root' })
 export class BookingService {
   private api = inject(ApiService);
+  private wsService = inject(WebSocketService);
 
   readonly bookings = signal<Booking[]>([]);
   readonly pendingBooking = signal<Partial<Booking> | null>(null);
   readonly loading = signal(false);
+
+  constructor() {
+    // Écouter les confirmations de paiement globales pour mettre à jour le cache
+    this.wsService.onPaymentConfirmed().subscribe(({ bookingId }) => {
+      // Recharger la réservation spécifique
+      this.getBookingById(bookingId).subscribe(updated => {
+        if (updated) {
+          this.bookings.update(list => 
+            list.map(b => b.id === bookingId ? updated : b)
+          );
+        }
+      });
+    });
+  }
 
   getBookings(): Observable<Booking[]> {
     return this.api.get<any>('/bookings').pipe(
@@ -136,5 +152,11 @@ export class BookingService {
   rateBooking(_id: string, _rating: number, _comment: string): Observable<{ success: boolean }> {
     // No rating API endpoint — no-op
     return new Observable(obs => { obs.next({ success: true }); obs.complete(); });
+  }
+
+  verifyBookingPayment(bookingId: string): Observable<Booking | undefined> {
+    return this.api.post<any>(`/bookings/${bookingId}/verify-payment`, {}).pipe(
+      map(b => b ? mapApiBooking(b) : undefined)
+    );
   }
 }

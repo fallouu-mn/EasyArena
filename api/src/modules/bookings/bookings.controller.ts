@@ -96,4 +96,10 @@ export class BookingsController {
   ) {
     return this.paymentsService.initiatePayment(user, id, dto);
   }
+
+  @Roles(Role.CLIENT)
+  @Post('bookings/:id/verify-payment')
+  verifyPayment(@CurrentUser() user: User, @Param('id') id: string) {
+    return this.bookingsService.verifyBookingPayment(user, id);
+  }
 }

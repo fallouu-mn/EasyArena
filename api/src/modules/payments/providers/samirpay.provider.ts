@@ -76,7 +76,7 @@ export class SamirpayProvider implements IPaymentProvider {
       process.env.FRONTEND_URL ||
       process.env.CLIENT_APP_URL ||
       'https://easyarena221.com';
-    const defaultReturnUrl = `${frontendUrl}/my-bookings?status=success`;
+    const defaultReturnUrl = `${frontendUrl}/booking/confirmation`;
     const returnUrl = params.returnUrl || params.callbackUrl || defaultReturnUrl;
 
     let cleanPhone = params.phone ? params.phone.replace(/[\s\-().]/g, '') : '';

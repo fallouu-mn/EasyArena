@@ -179,7 +179,7 @@ export class SubscriptionsService {
       const firstInstallment = savedInstallments[0];
       if (firstInstallment && Number(firstInstallment.amount) > 0) {
         // BLOC 2 — Retour de passerelle : après paiement, on dépose le client
-        // sur « Mes Abonnements » (badge ACTIF) et non sur /my-bookings,
+        // sur « Mes Abonnements » (badge ACTIF) et non sur /booking/history,
         // qui liste les réservations classiques.
         const frontendUrl =
           this.configService.get<string>('frontendUrl') ||

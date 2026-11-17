@@ -43,6 +43,7 @@ import { User } from '../users/entities/user.entity';
 import { SponsorshipService } from '../sponsorship/sponsorship.service';
 import { RecipientsResolver } from '../notifications/recipients.resolver';
 import { splitPayment } from '../../common/utils/finance.utils';
+import { generateBookingCode } from '../../common/utils/booking-code.utils';
 
 const SERVICE_FEE_PERCENT = 0.05;
 
@@ -120,7 +121,7 @@ export class PaymentsService {
       process.env.FRONTEND_URL ||
       process.env.CLIENT_APP_URL ||
       'https://easyarena221.com';
-    const returnUrl = `${frontendUrl}/my-bookings?status=success&bookingId=${bookingId}`;
+    const returnUrl = `${frontendUrl}/booking/confirmation?bookingId=${bookingId}`;
 
     // Check for existing pending payment — re-call provider to get fresh URLs/QR
     const existingPayment = await this.paymentRepo.findOne({ where: { booking_id: bookingId } });
@@ -217,7 +218,12 @@ export class PaymentsService {
         });
         if (!booking) { await qr.rollbackTransaction(); return; }
 
-        await qr.manager.update(Booking, booking.id, { status: BookingStatus.CONFIRMED });
+        // Générer le code de réservation unique
+        const bookingCode = generateBookingCode();
+        await qr.manager.update(Booking, booking.id, { 
+          status: BookingStatus.CONFIRMED,
+          booking_code: bookingCode,
+        });
         
         // IoT Scheduling
         try {
