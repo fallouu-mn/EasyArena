@@ -17,7 +17,10 @@ import { User } from '../users/entities/user.entity';
 import { BookingsService } from './bookings.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { BookingQueryDto } from './dto/booking-query.dto';
-import { CreateCancelRequestDto, ValidateCancelRequestDto } from './dto/cancel-request.dto';
+import {
+  CreateCancelRequestDto,
+  ValidateCancelRequestDto,
+} from './dto/cancel-request.dto';
 import { PaymentsService } from '../payments/payments.service';
 import { InitiatePaymentDto } from '../payments/dto/initiate-payment.dto';
 
@@ -100,6 +103,6 @@ export class BookingsController {
   @Roles(Role.CLIENT)
   @Post('bookings/:id/verify-payment')
   verifyPayment(@CurrentUser() user: User, @Param('id') id: string) {
-    return this.bookingsService.verifyBookingPayment(user, id);
+    return this.paymentsService.verifyBookingPayment(user, id);
   }
 }

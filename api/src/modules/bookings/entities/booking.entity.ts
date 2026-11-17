@@ -66,9 +66,6 @@ export class Booking {
   @Column({ type: 'enum', enum: BookingStatus, default: BookingStatus.PENDING_PAYMENT })
   status: BookingStatus;
 
-  @Column({ type: 'varchar', length: 12, nullable: true, unique: true })
-  booking_code: string | null;
-
   @Column({ type: 'timestamp' })
   expires_at: Date;
 
