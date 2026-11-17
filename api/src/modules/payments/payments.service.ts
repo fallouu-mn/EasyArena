@@ -315,16 +315,6 @@ export class PaymentsService {
           this.logger.warn(`[Webhook] Order ${payload.order_id} not in PENDING_PAYMENT — ignoring`);
           return { received: true, message: 'Already processed' };
        }
-
-       const expectedTotal = orders.reduce((sum, o) => sum + Number(o.total_amount), 0);
-       if (webhookAmount !== undefined && !isNaN(webhookAmount) && webhookAmount !== expectedTotal) {
-         this.logger.error(`[Webhook] REJECTED — Montant invalide pour commande ${payload.order_id}: attendu=${expectedTotal}, reçu=${webhookAmount}`);
-         throw new BadRequestException('Payment amount mismatch');
-       }
-       if (webhookCurrency && webhookCurrency !== 'XOF' && webhookCurrency !== 'FCFA' && webhookCurrency !== 'CFA') {
-         this.logger.error(`[Webhook] REJECTED — Devise invalide pour commande ${payload.order_id}: attendu=XOF/FCFA, reçu=${webhookCurrency}`);
-         throw new BadRequestException('Payment currency mismatch');
-       }
        if (payload.status === 'success') {
           for (const order of orders) {
              await this.dataSource.manager.update(Order, order.id, { status: OrderStatus.PAID });
@@ -482,16 +472,6 @@ export class PaymentsService {
         return { received: true, message: 'Ticket Already processed' };
       }
 
-      const expectedAmount = Number(ticket.event?.ticket_price || 0);
-      if (webhookAmount !== undefined && !isNaN(webhookAmount) && expectedAmount > 0 && webhookAmount !== expectedAmount) {
-        this.logger.error(`[Webhook] REJECTED — Montant invalide pour ticket ${ticket.id}: attendu=${expectedAmount}, reçu=${webhookAmount}`);
-        throw new BadRequestException('Payment amount mismatch');
-      }
-      if (webhookCurrency && webhookCurrency !== 'XOF' && webhookCurrency !== 'FCFA' && webhookCurrency !== 'CFA') {
-        this.logger.error(`[Webhook] REJECTED — Devise invalide pour ticket ${ticket.id}: attendu=XOF/FCFA, reçu=${webhookCurrency}`);
-        throw new BadRequestException('Payment currency mismatch');
-      }
-
       if (isSuccess) {
         const qr = this.dataSource.createQueryRunner();
         await qr.connect();
@@ -630,11 +610,24 @@ export class PaymentsService {
 
     try {
       if (isSuccess) {
-        await qr.manager.update(Payment, payment.id, {
-          status: PaymentStatus.SUCCESS,
-          paid_at: new Date(),
-          external_ref: externalRef || payment.external_ref,
-        });
+        // Atomic conditional update : verrouille la ligne et garantit qu'une seule exécution concurrente passe
+        const updateResult = await qr.manager.update(
+          Payment,
+          { id: payment.id, status: PaymentStatus.PENDING },
+          {
+            status: PaymentStatus.SUCCESS,
+            paid_at: new Date(),
+            external_ref: externalRef || payment.external_ref,
+          },
+        );
+
+        if (!updateResult.affected || updateResult.affected === 0) {
+          await qr.rollbackTransaction();
+          return this.bookingRepo.findOne({
+            where: { id: payment.booking_id },
+            relations: ['field', 'field.photos', 'client', 'client.user', 'payment'],
+          });
+        }
 
         const booking = await qr.manager.findOne(Booking, {
           where: { id: payment.booking_id },
@@ -746,7 +739,20 @@ export class PaymentsService {
           relations: ['field', 'field.photos', 'client', 'client.user', 'payment'],
         });
       } else {
-        await qr.manager.update(Payment, payment.id, { status: PaymentStatus.FAILED });
+        const updateResult = await qr.manager.update(
+          Payment,
+          { id: payment.id, status: PaymentStatus.PENDING },
+          { status: PaymentStatus.FAILED },
+        );
+
+        if (!updateResult.affected || updateResult.affected === 0) {
+          await qr.rollbackTransaction();
+          return this.bookingRepo.findOne({
+            where: { id: payment.booking_id },
+            relations: ['field', 'field.photos', 'client', 'client.user', 'payment'],
+          });
+        }
+
         const booking = await qr.manager.findOne(Booking, {
           where: { id: payment.booking_id },
           relations: ['client', 'client.user'],
