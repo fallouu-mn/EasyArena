@@ -76,7 +76,7 @@ export class SamirpayProvider implements IPaymentProvider {
       process.env.FRONTEND_URL ||
       process.env.CLIENT_APP_URL ||
       'https://easyarena221.com';
-    const defaultReturnUrl = `${frontendUrl}/my-bookings?status=success`;
+    const defaultReturnUrl = `${frontendUrl}/booking/confirmation`;
     const returnUrl = params.returnUrl || params.callbackUrl || defaultReturnUrl;
 
     let cleanPhone = params.phone ? params.phone.replace(/[\s\-().]/g, '') : '';
@@ -201,7 +201,11 @@ export class SamirpayProvider implements IPaymentProvider {
     }
   }
 
-  async verifyTransaction(reference: string): Promise<{ status: 'SUCCESS' | 'FAILED' | 'PENDING' | 'EXPIRED' }> {
+  async verifyTransaction(reference: string): Promise<{
+    status: 'SUCCESS' | 'FAILED' | 'PENDING' | 'EXPIRED';
+    amount?: number;
+    currency?: string;
+  }> {
     const url = `https://app.samirpay.com/samirpays/api/tiers/direct/verify/${reference}`;
     const maskedKey = this.apiKey ? `${this.apiKey.slice(0, 8)}...` : 'NONE';
     this.logger.log(`[VerifyTransaction] Querying Samirpay for reference=${reference} (API-KEY: ${maskedKey})`);
@@ -221,17 +225,22 @@ export class SamirpayProvider implements IPaymentProvider {
       const data: any = await response.json();
       this.logger.log(`[VerifyTransaction] Response for ref=${reference}: ${JSON.stringify(data)}`);
       
+      const rawAmount = data.amount ?? data.data?.amount ?? data.body?.amount;
+      const rawCurrency = data.currency ?? data.data?.currency ?? data.body?.currency;
+      const amount = rawAmount !== undefined && !isNaN(Number(rawAmount)) ? Number(rawAmount) : undefined;
+      const currency = typeof rawCurrency === 'string' ? rawCurrency.trim().toUpperCase() : undefined;
+
       const statusStr = String(data.status || data.data?.status || '').toUpperCase();
       if (['SUCCESS', 'SUCCESSFUL', 'PAID', 'COMPLETED'].includes(statusStr)) {
-        return { status: 'SUCCESS' };
+        return { status: 'SUCCESS', amount, currency };
       }
       if (['FAILED', 'REJECTED', 'DECLINED', 'CANCELLED'].includes(statusStr)) {
-        return { status: 'FAILED' };
+        return { status: 'FAILED', amount, currency };
       }
       if (statusStr === 'EXPIRED') {
-        return { status: 'EXPIRED' };
+        return { status: 'EXPIRED', amount, currency };
       }
-      return { status: 'PENDING' };
+      return { status: 'PENDING', amount, currency };
     } catch (err: any) {
       this.logger.error(`[VerifyTransaction] ❌ Network/Fetch error querying Samirpay for ref=${reference}: ${err.message}`);
       return { status: 'PENDING' };

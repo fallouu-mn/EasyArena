@@ -120,7 +120,7 @@ export class PaymentsService {
       process.env.FRONTEND_URL ||
       process.env.CLIENT_APP_URL ||
       'https://easyarena221.com';
-    const returnUrl = `${frontendUrl}/my-bookings?status=success&bookingId=${bookingId}`;
+    const returnUrl = `${frontendUrl}/booking/confirmation?bookingId=${bookingId}`;
 
     // Check for existing pending payment — re-call provider to get fresh URLs/QR
     const existingPayment = await this.paymentRepo.findOne({ where: { booking_id: bookingId } });
@@ -292,6 +292,13 @@ export class PaymentsService {
       throw new ForbiddenException('Invalid webhook signature');
     }
     this.logger.log(`[Webhook] Signature verified for order_id=${payload.order_id}`);
+
+    const rawData = (payload as any).data || {};
+    const rawJson = (payload as any).json ? (typeof (payload as any).json === 'string' ? JSON.parse((payload as any).json) : (payload as any).json) : null;
+    const rawAmountVal = payload.amount ?? rawJson?.amount ?? rawData.amount;
+    const webhookAmount = rawAmountVal !== undefined ? Number(rawAmountVal) : undefined;
+    const rawCurrencyVal = payload.currency ?? rawJson?.currency ?? rawData.currency;
+    const webhookCurrency = typeof rawCurrencyVal === 'string' ? rawCurrencyVal.trim().toUpperCase() : '';
 
     // --- HANDLING STORE ORDERS ---
     if (payload.order_id && payload.order_id.startsWith('EA-')) {
@@ -542,17 +549,85 @@ export class PaymentsService {
       return { received: true, message: 'Already processed' };
     }
 
+    const expectedAmount = Number(payment.amount);
+    let effectiveAmount = webhookAmount;
+    let effectiveCurrency = webhookCurrency;
+
+    // Si SamirPay n'envoie pas le montant dans le webhook, interroger l'API pour le récupérer
+    if (effectiveAmount === undefined) {
+      try {
+        const ref = payment.external_ref || payment.id;
+        const verification = await this.paymentProvider.verifyTransaction(ref);
+        if (verification.amount !== undefined) {
+          effectiveAmount = Number(verification.amount);
+        }
+        if (!effectiveCurrency && verification.currency) {
+          effectiveCurrency = verification.currency.trim().toUpperCase();
+        }
+      } catch (err: any) {
+        this.logger.warn(`[Webhook] Impossible de récupérer le montant via verifyTransaction: ${err?.message}`);
+      }
+    }
+
+    if (effectiveAmount !== undefined && !isNaN(effectiveAmount) && Number(effectiveAmount) !== expectedAmount) {
+      this.logger.error(`[Webhook] REJECTED — Montant invalide pour booking payment ${payment.id}: attendu=${expectedAmount}, reçu=${effectiveAmount}`);
+      throw new BadRequestException('Payment amount mismatch');
+    }
+
+    const isAllowedCurrency = (c: string) => ['XOF', 'FCFA', 'CFA'].includes(c.trim().toUpperCase());
+    if (effectiveCurrency && !isAllowedCurrency(effectiveCurrency)) {
+      this.logger.error(`[Webhook] REJECTED — Devise invalide pour booking payment ${payment.id}: attendu=XOF/FCFA/CFA, reçu=${effectiveCurrency}`);
+      throw new BadRequestException('Payment currency mismatch');
+    }
+
+    await this.processBookingPaymentResult(payment.id, isSuccess, payload.transaction_id);
+    return { received: true };
+  }
+
+  /**
+   * Traite le résultat du paiement d'une réservation de manière atomique et idempotente.
+   * Partagé entre le webhook et la vérification synchrone (verify-payment).
+   */
+  async processBookingPaymentResult(
+    paymentId: string,
+    isSuccess: boolean,
+    externalRef?: string,
+  ): Promise<Booking | null> {
+    const payment = await this.paymentRepo.findOne({ where: { id: paymentId } });
+    if (!payment) return null;
+
+    // Idempotence : si le paiement n'est plus PENDING, ne rien réappliquer
+    if (payment.status !== PaymentStatus.PENDING) {
+      return this.bookingRepo.findOne({
+        where: { id: payment.booking_id },
+        relations: ['field', 'field.photos', 'client', 'client.user', 'payment'],
+      });
+    }
+
     const qr = this.dataSource.createQueryRunner();
     await qr.connect();
     await qr.startTransaction();
 
     try {
       if (isSuccess) {
-        await qr.manager.update(Payment, payment.id, {
-          status: PaymentStatus.SUCCESS,
-          paid_at: new Date(),
-          external_ref: payload.transaction_id || payment.external_ref,
-        });
+        // Atomic conditional update : verrouille la ligne et garantit qu'une seule exécution concurrente passe
+        const updateResult = await qr.manager.update(
+          Payment,
+          { id: payment.id, status: PaymentStatus.PENDING },
+          {
+            status: PaymentStatus.SUCCESS,
+            paid_at: new Date(),
+            external_ref: externalRef || payment.external_ref,
+          },
+        );
+
+        if (!updateResult.affected || updateResult.affected === 0) {
+          await qr.rollbackTransaction();
+          return this.bookingRepo.findOne({
+            where: { id: payment.booking_id },
+            relations: ['field', 'field.photos', 'client', 'client.user', 'payment'],
+          });
+        }
 
         const booking = await qr.manager.findOne(Booking, {
           where: { id: payment.booking_id },
@@ -573,7 +648,10 @@ export class PaymentsService {
           await qr.manager.update(Booking, booking.id, { status: BookingStatus.CANCELLED });
           await qr.manager.update(Payment, payment.id, { status: PaymentStatus.FAILED });
           await qr.commitTransaction();
-          return { received: true };
+          return this.bookingRepo.findOne({
+            where: { id: booking.id },
+            relations: ['field', 'field.photos', 'client', 'client.user', 'payment'],
+          });
         }
 
         await qr.manager.update(Booking, booking.id, { status: BookingStatus.CONFIRMED });
@@ -655,8 +733,26 @@ export class PaymentsService {
         await qr.commitTransaction();
         await this.notifyBookingConfirmed(booking, payment, owner);
         this.paymentGateway.notifyPaymentConfirmed(booking.id);
+
+        return this.bookingRepo.findOne({
+          where: { id: booking.id },
+          relations: ['field', 'field.photos', 'client', 'client.user', 'payment'],
+        });
       } else {
-        await qr.manager.update(Payment, payment.id, { status: PaymentStatus.FAILED });
+        const updateResult = await qr.manager.update(
+          Payment,
+          { id: payment.id, status: PaymentStatus.PENDING },
+          { status: PaymentStatus.FAILED },
+        );
+
+        if (!updateResult.affected || updateResult.affected === 0) {
+          await qr.rollbackTransaction();
+          return this.bookingRepo.findOne({
+            where: { id: payment.booking_id },
+            relations: ['field', 'field.photos', 'client', 'client.user', 'payment'],
+          });
+        }
+
         const booking = await qr.manager.findOne(Booking, {
           where: { id: payment.booking_id },
           relations: ['client', 'client.user'],
@@ -676,15 +772,75 @@ export class PaymentsService {
         } else {
           await qr.commitTransaction();
         }
-      }
 
-      return { received: true };
+        return this.bookingRepo.findOne({
+          where: { id: payment.booking_id },
+          relations: ['field', 'field.photos', 'client', 'client.user', 'payment'],
+        });
+      }
     } catch (err) {
       await qr.rollbackTransaction();
       throw err;
     } finally {
       await qr.release();
     }
+  }
+
+  /**
+   * Vérifie le paiement auprès du provider (SamirPay) pour une réservation et applique
+   * la même logique idempotente que le webhook.
+   */
+  async verifyBookingPayment(user: User, bookingId: string): Promise<Booking> {
+    const client = await this.clientRepo.findOne({ where: { user: { id: user.id } } });
+    if (!client) throw new NotFoundException('Client not found');
+
+    const booking = await this.bookingRepo.findOne({
+      where: { id: bookingId, client_id: client.id },
+      relations: ['field', 'field.photos', 'client', 'client.user', 'payment'],
+    });
+    if (!booking) throw new NotFoundException('Booking not found');
+
+    // Si déjà confirmé, échoué ou sans paiement, retourner tel quel (idempotent)
+    if (booking.status === BookingStatus.CONFIRMED || booking.status === BookingStatus.CANCELLED || !booking.payment) {
+      return booking;
+    }
+
+    if (booking.payment.status !== PaymentStatus.PENDING) {
+      return booking;
+    }
+
+    const ref = booking.payment.external_ref || booking.payment.id;
+    this.logger.log(`[VerifyPayment] Requête provider pour booking=${bookingId}, ref=${ref}`);
+    const verification = await this.paymentProvider.verifyTransaction(ref);
+
+    const vStatus = String(verification.status || '').toUpperCase();
+
+    if (vStatus === 'SUCCESS') {
+      const expectedAmount = Number(booking.payment.amount);
+      if (
+        verification.amount !== undefined &&
+        !isNaN(Number(verification.amount)) &&
+        Number(verification.amount) !== expectedAmount
+      ) {
+        this.logger.error(
+          `[VerifyPayment] REJECTED — Montant invalide retourné par SamirPay pour booking ${bookingId}: attendu=${expectedAmount}, reçu=${verification.amount}`,
+        );
+        return booking;
+      }
+
+      this.logger.log(`[VerifyPayment] Paiement confirmé par provider pour booking=${bookingId}`);
+      await this.processBookingPaymentResult(booking.payment.id, true, ref);
+    } else if (vStatus === 'FAILED' || vStatus === 'EXPIRED') {
+      this.logger.warn(`[VerifyPayment] Paiement rejeté (${verification.status}) par provider pour booking=${bookingId}`);
+      await this.processBookingPaymentResult(booking.payment.id, false, ref);
+    }
+
+    return (
+      (await this.bookingRepo.findOne({
+        where: { id: bookingId },
+        relations: ['field', 'field.photos', 'client', 'client.user', 'payment'],
+      })) ?? booking
+    );
   }
 
   private buildOwnerSms(booking: Booking, payment: Payment): string {

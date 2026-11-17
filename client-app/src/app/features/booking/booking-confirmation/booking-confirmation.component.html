@@ -20,7 +20,26 @@
       </div>
     </ng-container>
 
-    <ng-container *ngIf="!paymentFailed()">
+    <!-- Pending payment confirmation -->
+    <ng-container *ngIf="isPending() && !paymentFailed()">
+      <div class="confirmation-check confirmation-check--pending">
+        <div class="confirmation-check__circle confirmation-check__circle--pending">
+          <span class="material-symbols-outlined confirmation-check__icon confirmation-check__icon--spin">sync</span>
+        </div>
+      </div>
+      <h1 class="confirmation-screen__title">{{ verifying() ? 'Paiement en cours de vérification' : 'Paiement en cours de confirmation…' }}</h1>
+      <p class="confirmation-screen__subtitle">
+        {{ verifying() ? 'Vous recevrez un SMS dès confirmation. Vous pouvez fermer cette page.' : 'Veuillez patienter quelques instants.' }}
+      </p>
+      <div class="confirmation-actions" *ngIf="!verifying()">
+        <button class="btn btn--ghost btn--full" (click)="goHome()" type="button">
+          Retour à l'accueil
+        </button>
+      </div>
+    </ng-container>
+
+    <!-- Confirmed state -->
+    <ng-container *ngIf="!paymentFailed() && !isPending()">
 
     <!-- Animated checkmark -->
     <div class="confirmation-check">
@@ -100,15 +119,12 @@
     <div class="confirmation-actions">
       <button class="btn btn--ghost btn--full" (click)="downloadTicket()" type="button">
         <span class="material-symbols-outlined">download</span>
-        Télécharger le ticket
+        Télécharger le reçu
       </button>
       <button class="btn btn--outline btn--full" (click)="shareWhatsApp()" type="button">
         Partager via WhatsApp
       </button>
-      <button class="btn btn--primary btn--full" (click)="goHome()" type="button">
-        Retour à l'accueil
-      </button>
-      <a routerLink="/booking/history" class="confirmation-actions__link">
+      <a routerLink="/booking/history" class="btn btn--primary btn--full">
         Voir mes réservations
       </a>
     </div>

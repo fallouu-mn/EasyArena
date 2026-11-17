@@ -33,6 +33,12 @@ export class BookingHistoryComponent implements OnInit {
   }
 
   ngOnInit(): void {
+    this.loadBookings();
+  }
+
+  private loadBookings(): void {
+    this.loading.set(true);
+    
     this.bookingService.getUpcomingBookings().subscribe(bookings => {
       this.upcomingBookings.set(bookings);
     });

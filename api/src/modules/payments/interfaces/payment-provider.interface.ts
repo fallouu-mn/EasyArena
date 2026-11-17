@@ -33,7 +33,11 @@ export interface IPaymentProvider {
   initiatePayment(params: InitiatePaymentParams): Promise<InitiatePaymentResult>;
   cashOut(params: CashOutParams): Promise<CashOutResult>;
   verifyWebhook(rawBody: string, signature: string): boolean;
-  verifyTransaction(reference: string): Promise<{ status: 'SUCCESS' | 'FAILED' | 'PENDING' | 'EXPIRED' }>;
+  verifyTransaction(reference: string): Promise<{
+    status: 'SUCCESS' | 'FAILED' | 'PENDING' | 'EXPIRED';
+    amount?: number;
+    currency?: string;
+  }>;
 }
 
 export const PAYMENT_PROVIDER = 'PAYMENT_PROVIDER';

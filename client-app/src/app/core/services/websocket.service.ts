@@ -19,9 +19,15 @@ export class WebSocketService {
       auth: { token },
       transports: ['websocket'],
     });
+    
+    // Connexion globale pour écouter tous les événements de paiement
+    this.socket.on('connect', () => {
+      console.log('[WebSocket] Connected to payments namespace');
+    });
   }
 
   joinBooking(bookingId: string): void {
+    if (!this.socket) this.connect();
     this.socket?.emit('join:booking', bookingId);
   }
 

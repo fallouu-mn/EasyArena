@@ -39,12 +39,36 @@
     justify-content: center;
     box-shadow: var(--shadow-green);
     animation: scaleIn 0.6s cubic-bezier(0.175, 0.885, 0.32, 1.275) both;
+    
+    &--failed {
+      background: var(--danger-red, #e53e3e);
+    }
+    
+    &--pending {
+      background: var(--primary-blue, #3b82f6);
+    }
   }
 
   &__icon {
     font-size: 2.75rem;
     color: #ffffff;
     font-variation-settings: 'FILL' 1;
+    
+    &--spin {
+      animation: rotate 1.5s linear infinite;
+    }
+  }
+  
+  &--failed {
+    .confirmation-check__circle {
+      animation: shake 0.5s ease-in-out both;
+    }
+  }
+  
+  &--pending {
+    .confirmation-check__circle {
+      animation: pulse 2s ease-in-out infinite;
+    }
   }
 }
 
@@ -214,4 +238,20 @@
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(16px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes rotate {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.05); opacity: 0.9; }
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  10%, 30%, 50%, 70%, 90% { transform: translateX(-4px); }
+  20%, 40%, 60%, 80% { transform: translateX(4px); }
 }
